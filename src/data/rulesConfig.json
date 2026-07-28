@@ -1,0 +1,22 @@
+{
+  "countRules": {
+    "wall": { "enabled": true, "min": 2, "max": 5 },
+    "table": { "enabled": true, "min": 1, "max": 3 },
+    "buro": { "enabled": true, "min": 1, "max": 1 }
+  },
+  "categoryMixing": {
+    "enabled": true,
+    "blockedPairs": [
+      ["outerwear", "basics"],
+      ["accessories", "dresses"]
+    ]
+  },
+  "colorPrint": {
+    "enabled": true,
+    "maxClashing": 1
+  },
+  "sizeRun": {
+    "enabled": true,
+    "requiredSizes": ["S", "M", "L", "XL"]
+  }
+}

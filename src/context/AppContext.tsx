@@ -1,0 +1,189 @@
+import React, { createContext, useContext, useState, useCallback } from 'react';
+import type {
+  Product,
+  Fixture,
+  Slot,
+  Assignment,
+  RulesConfig,
+  FixtureWithSlots,
+  Store,
+} from '../types';
+import type { Violation } from '../types';
+import { evaluateRules } from '../engine';
+import {
+  defaultStore,
+  defaultFixtures,
+  defaultSlots,
+  defaultAssignments,
+} from '../data/defaultStore';
+import defaultRulesConfig from '../data/rulesConfig.json';
+import productsData from '../data/products.json';
+
+interface AppState {
+  products: Product[];
+  store: Store;
+  fixtures: Fixture[];
+  slots: Slot[];
+  assignments: Assignment[];
+  rulesConfig: RulesConfig;
+  selectedFixtureId: string | null;
+  selectedSlotId: string | null;
+}
+
+interface AppContextValue extends AppState {
+  fixturesWithSlots: FixtureWithSlots[];
+  getViolationsForFixture: (fixtureId: string) => Violation[];
+  setMainProduct: (slotId: string, productId: string | null) => void;
+  addAlternate: (slotId: string, productId: string) => void;
+  removeAlternate: (slotId: string, productId: string) => void;
+  reorderAlternates: (slotId: string, fromIndex: number, toIndex: number) => void;
+  updateRulesConfig: (config: RulesConfig) => void;
+  selectFixture: (fixtureId: string | null) => void;
+  selectSlot: (slotId: string | null) => void;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [products] = useState<Product[]>(productsData as Product[]);
+  const [store] = useState<Store>(defaultStore);
+  const [fixtures] = useState<Fixture[]>(defaultFixtures);
+  const [slots] = useState<Slot[]>(defaultSlots);
+  const [assignments, setAssignments] =
+    useState<Assignment[]>(defaultAssignments);
+  const [rulesConfig, setRulesConfig] =
+    useState<RulesConfig>(defaultRulesConfig);
+  const [selectedFixtureId, setSelectedFixtureId] = useState<string | null>(
+    null
+  );
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+
+  // ── Derived state: fixtures with their slots and assignments ──
+  const fixturesWithSlots: FixtureWithSlots[] = fixtures.map((fixture) => ({
+    fixture,
+    slots: slots
+      .filter((s) => s.fixture_id === fixture.id)
+      .sort((a, b) => a.position - b.position)
+      .map((slot) => ({
+        ...slot,
+        assignment:
+          assignments.find((a) => a.slot_id === slot.id) ?? null,
+      })),
+  }));
+
+  // ── Violations per fixture ──
+  const getViolationsForFixture = useCallback(
+    (fixtureId: string): Violation[] => {
+      const fixture = fixtures.find((f) => f.id === fixtureId);
+      if (!fixture) return [];
+
+      const fixtureAssignments = assignments.filter((a) =>
+        slots
+          .filter((s) => s.fixture_id === fixtureId)
+          .some((s) => s.id === a.slot_id)
+      );
+
+      return evaluateRules(fixture, fixtureAssignments, products, rulesConfig);
+    },
+    [assignments, fixtures, slots, products, rulesConfig]
+  );
+
+  // ── Mutations ──
+  const setMainProduct = useCallback(
+    (slotId: string, productId: string | null) => {
+      setAssignments((prev) =>
+        prev.map((a) =>
+          a.slot_id === slotId
+            ? { ...a, main_product_id: productId, alternates: [] }
+            : a
+        )
+      );
+    },
+    []
+  );
+
+  const addAlternate = useCallback(
+    (slotId: string, productId: string) => {
+      setAssignments((prev) =>
+        prev.map((a) =>
+          a.slot_id === slotId && !a.alternates.includes(productId)
+            ? { ...a, alternates: [...a.alternates, productId] }
+            : a
+        )
+      );
+    },
+    []
+  );
+
+  const removeAlternate = useCallback(
+    (slotId: string, productId: string) => {
+      setAssignments((prev) =>
+        prev.map((a) =>
+          a.slot_id === slotId
+            ? {
+                ...a,
+                alternates: a.alternates.filter((id) => id !== productId),
+              }
+            : a
+        )
+      );
+    },
+    []
+  );
+
+  const reorderAlternates = useCallback(
+    (slotId: string, fromIndex: number, toIndex: number) => {
+      setAssignments((prev) =>
+        prev.map((a) => {
+          if (a.slot_id !== slotId) return a;
+          const newAlts = [...a.alternates];
+          const [moved] = newAlts.splice(fromIndex, 1);
+          newAlts.splice(toIndex, 0, moved);
+          return { ...a, alternates: newAlts };
+        })
+      );
+    },
+    []
+  );
+
+  const selectFixture = useCallback((fixtureId: string | null) => {
+    setSelectedFixtureId(fixtureId);
+    setSelectedSlotId(null);
+  }, []);
+
+  const selectSlot = useCallback((slotId: string | null) => {
+    setSelectedSlotId(slotId);
+  }, []);
+
+  return (
+    <AppContext.Provider
+      value={{
+        products,
+        store,
+        fixtures,
+        slots,
+        assignments,
+        rulesConfig,
+        selectedFixtureId,
+        selectedSlotId,
+        fixturesWithSlots,
+        getViolationsForFixture,
+        setMainProduct,
+        addAlternate,
+        removeAlternate,
+        reorderAlternates,
+        updateRulesConfig: setRulesConfig,
+        selectFixture,
+        selectSlot,
+      }}
+    >
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export function useApp(): AppContextValue {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error('useApp must be used within AppProvider');
+  return ctx;
+}
