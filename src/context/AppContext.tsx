@@ -18,6 +18,7 @@ import {
 } from '../data/defaultStore';
 import defaultRulesConfig from '../data/rulesConfig.json';
 import productsData from '../data/products.json';
+import { refreshCatalog, getCacheJson, readCache } from '../scraper';
 
 interface AppState {
   products: Product[];
@@ -28,6 +29,10 @@ interface AppState {
   rulesConfig: RulesConfig;
   selectedFixtureId: string | null;
   selectedSlotId: string | null;
+  dataSource: 'static' | 'scraped';
+  isRefreshing: boolean;
+  lastRefreshError: string | null;
+  lastRefreshTimestamp: string | null;
 }
 
 interface AppContextValue extends AppState {
@@ -40,12 +45,37 @@ interface AppContextValue extends AppState {
   updateRulesConfig: (config: RulesConfig) => void;
   selectFixture: (fixtureId: string | null) => void;
   selectSlot: (slotId: string | null) => void;
+  setDataSource: (source: 'static' | 'scraped') => void;
+  triggerRefresh: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+/** Try to load cached products from localStorage on init */
+function loadInitialProducts(): { products: Product[]; source: 'static' | 'scraped'; cacheJson: string | null } {
+  try {
+    const cacheJson = localStorage.getItem('products-cache');
+    if (cacheJson) {
+      const cached = readCache(cacheJson);
+      if (cached && cached.length > 0) {
+        return { products: cached, source: 'scraped', cacheJson };
+      }
+    }
+  } catch {
+    // localStorage unavailable or corrupt — fall through to static
+  }
+  return { products: productsData as Product[], source: 'static', cacheJson: null };
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [products] = useState<Product[]>(productsData as Product[]);
+  const initial = loadInitialProducts();
+  const [products, setProducts] = useState<Product[]>(initial.products);
+  const [dataSource, setDataSource] = useState<'static' | 'scraped'>(initial.source);
+  const [cacheJson, setCacheJson] = useState<string | null>(initial.cacheJson);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshError, setLastRefreshError] = useState<string | null>(null);
+  const [lastRefreshTimestamp, setLastRefreshTimestamp] = useState<string | null>(null);
+
   const [store] = useState<Store>(defaultStore);
   const [fixtures] = useState<Fixture[]>(defaultFixtures);
   const [slots] = useState<Slot[]>(defaultSlots);
@@ -87,6 +117,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [assignments, fixtures, slots, products, rulesConfig]
   );
+
+  // ── Trigger catalog refresh ──
+  const triggerRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    setLastRefreshError(null);
+
+    try {
+      const result = await refreshCatalog(cacheJson);
+
+      if (result.success) {
+        setProducts(result.products);
+        setDataSource('scraped');
+        const newCache = getCacheJson(result.products);
+        setCacheJson(newCache);
+        // Persist to localStorage
+        try {
+          localStorage.setItem('products-cache', newCache);
+        } catch { /* ignore */ }
+        setLastRefreshTimestamp(result.timestamp);
+        setLastRefreshError(null);
+      } else if (result.source === 'fallback-static') {
+        // Scrape failed and no valid cache — use static
+        setProducts(productsData as Product[]);
+        setDataSource('static');
+        setLastRefreshError(result.error || 'Scrape failed, using static data');
+      } else {
+        // Scrape failed but kept previous cache
+        setLastRefreshError(result.error || 'Scrape failed, kept previous cache');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setLastRefreshError(`Unexpected error: ${msg}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [cacheJson]);
 
   // ── Mutations ──
   const setMainProduct = useCallback(
@@ -155,6 +221,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSelectedSlotId(slotId);
   }, []);
 
+  const handleSetDataSource = useCallback((source: 'static' | 'scraped') => {
+    if (source === 'static') {
+      setProducts(productsData as Product[]);
+      setDataSource('static');
+    } else {
+      // Try to load from cache
+      if (cacheJson) {
+        const cached = readCache(cacheJson);
+        if (cached && cached.length > 0) {
+          setProducts(cached);
+          setDataSource('scraped');
+          return;
+        }
+      }
+      // No cache available — can't switch to scraped
+      setLastRefreshError('No scraped data available. Run Refresh Catalog first.');
+    }
+  }, [cacheJson]);
+
   return (
     <AppContext.Provider
       value={{
@@ -166,6 +251,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         rulesConfig,
         selectedFixtureId,
         selectedSlotId,
+        dataSource,
+        isRefreshing,
+        lastRefreshError,
+        lastRefreshTimestamp,
         fixturesWithSlots,
         getViolationsForFixture,
         setMainProduct,
@@ -175,6 +264,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         updateRulesConfig: setRulesConfig,
         selectFixture,
         selectSlot,
+        setDataSource: handleSetDataSource,
+        triggerRefresh,
       }}
     >
       {children}
